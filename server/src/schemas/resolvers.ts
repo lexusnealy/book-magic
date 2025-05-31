@@ -1,120 +1,82 @@
-import { BookDocument } from '../models/Book.js';
 import User from '../models/User.js';
-import { signToken, AuthenticationError } from '../services/auth.js';
-
-interface User {
-    id: string;
-    username: string;
-    email: string;
-    password: string;
-    savedBooks: BookDocument[];
-    bookCount: number
-}
-
-interface UserArgs {
-    username: string
-}
-
-interface CreateUserArgs {
-    input: {
-        username: string;
-        email: string;
-        password: string;
-        savedBooks: BookInput[]
-    }
-}
-
-interface LoginArgs {
-    email: string,
-    password: string
-}
-
-interface BookInput {
-    authors: [string];
-    description: string;
-    bookId: string;
-    image: string;
-    link: string;
-    title: string;
-}
-
-interface DeleteBookArgs {
-    bookId: string
-}
-
-
+import { signToken } from '../services/auth.js';
+import type { GraphQLContext } from '../services/auth.js';
+import type { BookDocument } from '../models/Book.js';
 
 const resolvers = {
-    Query: {
-        user: async (_parent: any, { username }: UserArgs): Promise<User | null> => {
-            return await User.findOne(
-                { username }
-            );
-        },
+  Query: {
+    me: async (_parent: any, _args: any, context: GraphQLContext) => {
+      if (context.user) {
+        return User.findOne({ _id: context.user._id });
+      }
+      throw new Error('You need to be logged in!');
+    },
+  },
 
-        me: async (_parent: any, _args: unknown, context: any): Promise<User | null> => {
-            if (context.user) {
-              // If user is authenticated, return their profile
-              return await User.findOne({ _id: context.user._id });
-            }
-            // If not authenticated, throw an authentication error
-            throw new AuthenticationError('Not Authenticated');
-          }
+  Mutation: {
+    addUser: async (_parent: any, { username, email, password }: { username: string; email: string; password: string }) => {
+      const user = await User.create({ username, email, password });
+      const token = signToken(user.username, user.email, user._id);
+      return { token, user };
     },
 
-    Mutation: {
-        createUser: async (_parent: any, { input }: CreateUserArgs): Promise<{ token: string; user: User }> => {
-           
-            const user = await User.create({ ...input });
-            const token = signToken(user.username, user.email, user._id);
-      
-            return { user, token };
-        },
+    login: async (_parent: any, { email, password }: { email: string; password: string }) => {
+      console.log('Login attempt for email:', email);
+      const user = await User.findOne({ email });
+      console.log('User found:', user ? 'Yes' : 'No');
 
-        loginUser: async (_parent: any, { email, password}: LoginArgs): Promise<{ token: string; user: User }> => {
-         
-            const user = await User.findOne({ email });
+      if (!user) {
+        console.log('No user found with email:', email);
+        throw new Error("Can't find this user");
+      }
 
-            if (!user) {
-                throw AuthenticationError;
-            }
+      const correctPw = await user.isCorrectPassword(password);
+      console.log('Password correct:', correctPw ? 'Yes' : 'No');
 
-      
-            const correctPw = await user.isCorrectPassword(password);
+      if (!correctPw) {
+        console.log('Incorrect password for user:', email);
+        throw new Error('Wrong password!');
+      }
 
-            if (!correctPw) {
-                throw new AuthenticationError('Not authenticated')
-            }
+      const token = signToken(user.username, user.email, user._id);
+      console.log('Login successful for user:', email);
+      return { token, user };
+    },
 
-            const token = signToken(user.username, user.email, user.id);
+    saveBook: async (_parent: any, { bookData }: { bookData: BookDocument }, context: GraphQLContext) => {
+      if (!context.user) {
+        throw new Error('You need to be logged in!');
+      }
 
-            return { token, user }
-        },
+      try {
+        const updatedUser = await User.findOneAndUpdate(
+          { _id: context.user._id },
+          { $addToSet: { savedBooks: bookData } },
+          { new: true, runValidators: true }
+        );
+        return updatedUser;
+      } catch (err) {
+        throw new Error('Failed to save book');
+      }
+    },
 
-        saveBook: async (_parent: any, { input }: { input: BookInput }, context: any): Promise<User | null> => {
-            if (context.user) {
-                return await User.findOneAndUpdate(
-                    { _id: context.user._id },
-                    { $addToSet: { savedBooks: input } },
-                    { new: true, runValidators: true }
-                )
-            }
+    removeBook: async (_parent: any, { bookId }: { bookId: string }, context: GraphQLContext) => {
+      if (!context.user) {
+        throw new Error('You need to be logged in!');
+      }
 
-            throw new AuthenticationError('Could not find user');
-        },
-        
-        deleteBook: async (_parent: any, { bookId }: DeleteBookArgs, context: any): Promise<User | null> => {
-            if (context.user) {
-                return await User.findOneAndUpdate(
-                    { _id: context.user._id},
-                    { $pull: { savedBooks: { bookId: bookId } } },
-                    { new: true }
-                );
-            }
-
-            throw new AuthenticationError('Could not find user')
-        }
-    }
+      try {
+        const updatedUser = await User.findOneAndUpdate(
+          { _id: context.user._id },
+          { $pull: { savedBooks: { bookId } } },
+          { new: true }
+        );
+        return updatedUser;
+      } catch (err) {
+        throw new Error('Failed to remove book');
+      }
+    },
+  },
 };
 
-export default resolvers
+export default resolvers;
